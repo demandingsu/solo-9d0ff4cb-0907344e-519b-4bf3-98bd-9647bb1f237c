@@ -43,6 +43,42 @@ CREATE TABLE IF NOT EXISTS deliveries (
     destination TEXT NOT NULL,
     crates   INTEGER NOT NULL
 );
+
+-- 待结清暂存：单据未到齐的批次先放这里，确认结清后才搬进上面的正式台账表。
+-- 暂存数据不计入核对包汇总，也不影响已入账数据的校验口径。
+CREATE TABLE IF NOT EXISTS staged_uploads (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_hash    TEXT NOT NULL UNIQUE,        -- 同一批原样重传只记一次
+    uploaded_at   TEXT NOT NULL,
+    inbound_count INTEGER NOT NULL,
+    transfer_count INTEGER NOT NULL,
+    delivery_count INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS staged_inbound (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    staged_id INTEGER NOT NULL REFERENCES staged_uploads(id),
+    session   TEXT NOT NULL,
+    orchard   TEXT NOT NULL,
+    crates    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS staged_transfers (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    staged_id INTEGER NOT NULL REFERENCES staged_uploads(id),
+    from_session TEXT NOT NULL,
+    to_session   TEXT NOT NULL,
+    crates    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS staged_deliveries (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    staged_id INTEGER NOT NULL REFERENCES staged_uploads(id),
+    session   TEXT NOT NULL,
+    kind      TEXT NOT NULL CHECK (kind IN ('交货', '余箱')),
+    destination TEXT NOT NULL,
+    crates    INTEGER NOT NULL
+);
 """
 
 

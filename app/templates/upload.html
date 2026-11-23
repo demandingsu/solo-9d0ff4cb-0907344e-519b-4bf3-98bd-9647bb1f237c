@@ -17,6 +17,25 @@
   <button type="submit">校验并入账</button>
 </form>
 
+<h3>单据还没到齐？先暂存待结清</h3>
+<p>入库单、转仓单、交货单分开送到时，可先把已到的单据<strong>暂存为待结清批次</strong>：
+沿用同样三份 CSV，没到的单据只传表头。涉及同一仓次的批次会自动并组，
+同一批原样重传只记一次；到齐后在<a href="{{ url_for('main.staging_list') }}">待结清列表</a>按组确认，
+符合台账规则才整组入账。</p>
+<form method="post" action="{{ url_for('main.staging_list') }}" enctype="multipart/form-data" class="upload-form">
+  <label>入库 CSV（表头：{{ inbound_headers }}；未到可只传表头）
+    <input type="file" name="inbound" accept=".csv" required>
+  </label>
+  <label>转仓 CSV（表头：{{ transfer_headers }}；未到可只传表头）
+    <input type="file" name="transfers" accept=".csv" required>
+  </label>
+  <label>交货 CSV（表头：{{ delivery_headers }}；未到可只传表头）
+    <input type="file" name="deliveries" accept=".csv" required>
+  </label>
+  <button type="submit">暂存待结清</button>
+  <a class="button" href="{{ url_for('main.staging_list') }}" style="margin-left:0.5rem">查看待结清列表</a>
+</form>
+
 <h3>校验规则</h3>
 <ul>
   <li>箱数一律为正整数（整箱）。</li>

@@ -1,4 +1,4 @@
-"""页面路由：上传台账、下载核对包、市场核对。"""
+"""页面路由：上传台账、待结清暂存、下载核对包、市场核对。"""
 import json
 from datetime import datetime, timezone
 
@@ -13,7 +13,7 @@ from flask import (
     url_for,
 )
 
-from . import checker, ledger
+from . import checker, ledger, staging
 from .db import get_db
 
 bp = Blueprint("main", __name__)
@@ -28,25 +28,33 @@ def index():
         orchards=ledger.orchard_summaries(conn),
         destinations=sorted(ledger.existing_destinations(conn)),
         max_destinations=ledger.MAX_DESTINATIONS,
+        staged=staging.staged_counts(conn),
     )
 
 
 # ---------------------------------------------------------------- 上传台账
 
+def _read_three_csvs():
+    """读取上传表单的三份 CSV；返回 (raw, missing)。"""
+    files = {
+        "inbound": request.files.get("inbound"),
+        "transfers": request.files.get("transfers"),
+        "deliveries": request.files.get("deliveries"),
+    }
+    missing = [name for name, f in files.items() if f is None or f.filename == ""]
+    if missing:
+        return None, missing
+    return {name: f.read() for name, f in files.items()}, []
+
+
 @bp.route("/upload", methods=["GET", "POST"])
 def upload():
     problems = []
     if request.method == "POST":
-        files = {
-            "inbound": request.files.get("inbound"),
-            "transfers": request.files.get("transfers"),
-            "deliveries": request.files.get("deliveries"),
-        }
-        missing = [name for name, f in files.items() if f is None or f.filename == ""]
+        raw, missing = _read_three_csvs()
         if missing:
             problems.append("三个 CSV 都必须上传：" + ", ".join(missing) + " 缺失")
         else:
-            raw = {name: f.read() for name, f in files.items()}
             try:
                 batch = ledger.parse_batch(raw["inbound"], raw["transfers"], raw["deliveries"])
                 conn = get_db()
@@ -76,6 +84,104 @@ def upload():
         delivery_headers=",".join(ledger.DELIVERY_HEADERS),
         max_destinations=ledger.MAX_DESTINATIONS,
     )
+
+
+# ---------------------------------------------------------------- 待结清暂存
+
+@bp.route("/staging", methods=["GET", "POST"])
+def staging_list():
+    conn = get_db()
+    if request.method == "POST":
+        raw, missing = _read_three_csvs()
+        if missing:
+            flash(
+                "三个 CSV 都必须上传（单据还没到的文件可只传表头）：" + ", ".join(missing) + " 缺失",
+                "error",
+            )
+        else:
+            try:
+                batch = ledger.parse_batch(raw["inbound"], raw["transfers"], raw["deliveries"])
+                digest = ledger.batch_hash(raw["inbound"], raw["transfers"], raw["deliveries"])
+                staged_id, created = staging.stage_batch(conn, digest, batch)
+            except ledger.BatchRejected as exc:
+                for p in exc.problems:
+                    flash(p, "error")
+                flash("本次暂存已退回，未记录任何内容。", "error")
+            else:
+                if created:
+                    flash(
+                        f"已暂存为待结清批次 #{staged_id}：入库 {len(batch.inbound)} 行、"
+                        f"转仓 {len(batch.transfers)} 行、交货/余箱 {len(batch.deliveries)} 行。"
+                        "暂存数据不计入核对包，确认结清后才入账。",
+                        "ok",
+                    )
+                else:
+                    flash(f"该批文件与已暂存的批次 #{staged_id} 内容相同，只记一次，未重复记录。", "ok")
+        return redirect(url_for("main.staging_list"))
+
+    groups = staging.staged_groups(conn)
+    # 预览：若现在确认，每组会碰到的问题（差额已在表中列出，这里给出完整校验结论）
+    existing_sessions = ledger.existing_sessions(conn)
+    existing_destinations = ledger.existing_destinations(conn)
+    for g in groups:
+        merged = staging.merged_batch(conn, g["batch_ids"])
+        try:
+            ledger.validate_batch(merged, existing_sessions, existing_destinations)
+            g["preview"] = []
+        except ledger.BatchRejected as exc:
+            g["preview"] = exc.problems
+    return render_template(
+        "staging.html",
+        groups=groups,
+        inbound_headers=",".join(ledger.INBOUND_HEADERS),
+        transfer_headers=",".join(ledger.TRANSFER_HEADERS),
+        delivery_headers=",".join(ledger.DELIVERY_HEADERS),
+        max_destinations=ledger.MAX_DESTINATIONS,
+    )
+
+
+@bp.post("/staging/confirm")
+def staging_confirm():
+    """按页面所示分组确认：合并整组，符合台账规则才整组入账。"""
+    raw = request.form.get("members", "")
+    member_ids = set()
+    for piece in raw.split(","):
+        piece = piece.strip()
+        if piece and piece.isdigit():
+            member_ids.add(int(piece))
+    conn = get_db()
+    group = staging.find_group(conn, sorted(member_ids)) if member_ids else None
+    if group is None:
+        # 入账前有补报并入该组（或该组已入账）：退回本次确认并提示刷新
+        flash(
+            "该待结清组已有变动（可能有补报并入或已入账），本次确认已退回，请刷新列表后重新确认。",
+            "error",
+        )
+        return redirect(url_for("main.staging_list"))
+
+    merged = staging.merged_batch(conn, group["batch_ids"])
+    try:
+        session_orchard = ledger.validate_batch(
+            merged, ledger.existing_sessions(conn), ledger.existing_destinations(conn)
+        )
+        staging.post_group(conn, group["batch_ids"], session_orchard)
+    except staging.GroupChanged:
+        flash(
+            "该待结清组已有变动（可能有补报并入或已入账），本次确认已退回，请刷新列表后重新确认。",
+            "error",
+        )
+    except ledger.BatchRejected as exc:
+        for p in exc.problems:
+            flash(p, "error")
+        flash("确认未通过：整组未入账，原账与暂存资料均未改动。", "error")
+    else:
+        flash(
+            f"结清入账成功：{len(group['batch_ids'])} 批合并入账（入库 {len(merged.inbound)} 行、"
+            f"转仓 {len(merged.transfers)} 行、交货/余箱 {len(merged.deliveries)} 行），"
+            "已从待结清列表移走并计入核对包汇总。",
+            "ok",
+        )
+    return redirect(url_for("main.staging_list"))
 
 
 # ---------------------------------------------------------------- 核对包

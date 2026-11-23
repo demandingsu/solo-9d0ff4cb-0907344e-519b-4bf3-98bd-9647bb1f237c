@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}待结清 · 苹果箱数核对平台{% endblock %}
+{% block content %}
+<h2>待结清暂存</h2>
+<p>入库单、转仓单、交货单常常分开送到：先把已到的单据暂存起来，<strong>单据还没到的文件只传表头</strong>即可。
+涉及同一仓次的暂存批次会自动并成一组；同一批文件原样重传只记一次。
+确认时整组合并并套用台账校验规则，全部通过才整组入账（此时才计入核对包汇总），
+否则本次确认退回，原账与暂存资料都不变。</p>
+
+<div class="card">
+  <h3>暂存一批（沿用三份 CSV）</h3>
+  <form method="post" action="{{ url_for('main.staging_list') }}" enctype="multipart/form-data" class="upload-form">
+    <label>入库 CSV（表头：{{ inbound_headers }}；未到可只传表头）
+      <input type="file" name="inbound" accept=".csv" required>
+    </label>
+    <label>转仓 CSV（表头：{{ transfer_headers }}；未到可只传表头）
+      <input type="file" name="transfers" accept=".csv" required>
+    </label>
+    <label>交货 CSV（表头：{{ delivery_headers }}；未到可只传表头）
+      <input type="file" name="deliveries" accept=".csv" required>
+    </label>
+    <button type="submit">暂存（待结清）</button>
+  </form>
+</div>
+
+<h2>待结清分组（{{ groups|length }} 组）</h2>
+{% if groups %}
+  {% for g in groups %}
+  <div class="card">
+    <h3>第 {{ loop.index }} 组 · 批次
+      {% for b in g.batches %}#{{ b.id }}{% if not loop.last %}、{% endif %}{% endfor %}
+    </h3>
+    <table>
+      <tr><th>批次</th><th>暂存时间</th><th>入库行</th><th>转仓行</th><th>交货/余箱行</th></tr>
+      {% for b in g.batches %}
+      <tr>
+        <td>#{{ b.id }}</td>
+        <td>{{ b.uploaded_at }}</td>
+        <td>{{ b.inbound_count }}</td>
+        <td>{{ b.transfer_count }}</td>
+        <td>{{ b.delivery_count }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    <table>
+      <tr><th>仓次</th><th>果园</th><th>收入（入库+转入）</th><th>支出（转出+交货+余箱）</th><th>箱数差额</th></tr>
+      {% for s in g.sessions %}
+      <tr{% if s.diff != 0 %} class="mismatch"{% endif %}>
+        <td>{{ s.session }}</td>
+        <td>{{ s.orchard }}</td>
+        <td>{{ s.inflow }}</td>
+        <td>{{ s.outflow }}</td>
+        <td>{% if s.diff > 0 %}+{% endif %}{{ s.diff }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% if g.preview %}
+      <div class="flash error">
+        若现在确认将退回：
+        <ul>
+          {% for p in g.preview %}<li>{{ p }}</li>{% endfor %}
+        </ul>
+      </div>
+    {% else %}
+      <div class="flash ok">各仓次收发平衡，符合台账规则，可确认结清。</div>
+    {% endif %}
+    <form method="post" action="{{ url_for('main.staging_confirm') }}">
+      <input type="hidden" name="members" value="{{ g.token }}">
+      <button type="submit">按此分组确认结清并入账</button>
+    </form>
+  </div>
+  {% endfor %}
+{% else %}
+  <p>没有待结清的暂存批次。单据还没到齐时，可先在上方暂存。</p>
+{% endif %}
+{% endblock %}

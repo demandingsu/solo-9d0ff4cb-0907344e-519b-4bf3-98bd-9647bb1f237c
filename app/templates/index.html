@@ -10,6 +10,10 @@
     <td>{{ overview.destinations }}{% if destinations %}（{{ destinations|join('、') }}）{% endif %}</td>
   </tr>
 </table>
+{% if staged.batches %}
+<p>另有 <a href="{{ url_for('main.staging_list') }}">待结清暂存 {{ staged.batches }} 批（{{ staged.groups }} 组）</a>，
+未确认结清前不计入以上汇总和核对包。</p>
+{% endif %}
 
 <h2>各果园汇总</h2>
 {% if orchards %}
